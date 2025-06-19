@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Monitoreo Académico</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      line-height: 1.6;
+    }
+    .container {
+      text-align: center;
+    }
+    .consent-box {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 20px 0;
+      text-align: left;
+      background: #f9f9f9;
+    }
+    button {
+      background-color: #0070f3;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 16px;
+      margin: 10px 5px;
+    }
+    button:disabled {
+      background-color: #cccccc;
+    }
+    #camera-preview {
+      width: 100%;
+      max-width: 400px;
+      margin: 10px auto;
+      display: block;
+      border: 1px solid #ddd;
+    }
+    #audio-visualizer {
+      width: 100%;
+      height: 50px;
+      background-color: #f0f0f0;
+      margin: 10px 0;
+    }
+    .status {
+      margin: 10px 0;
+      padding: 10px;
+      border-radius: 5px;
+    }
+    .success {
+      background-color: #d4edda;
+      color: #155724;
+    }
+    .error {
+      background-color: #f8d7da;
+      color: #721c24;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Participación en Estudio Académico</h1>
+    <div class="consent-box">
+      <h2>Consentimiento Informado</h2>
+      <p>Esta aplicación recolectará los siguientes datos con fines exclusivamente académicos:</p>
+      <ul>
+        <li>Ubicación GPS precisa</li>
+        <li>Imagen de la cámara frontal/trasera</li>
+        <li>Audio del micrófono (10 segundos)</li>
+      </ul>
+      <p>Todos los datos serán enviados a un servidor seguro y solo accesible por el equipo investigador.</p>
+      
+      <div id="status-container"></div>
+      
+      <button id="location-btn" onclick="captureLocation()">Enviar Ubicación</button>
+      <button id="camera-btn" onclick="captureCamera()">Tomar Foto</button>
+      <button id="mic-btn" onclick="captureMicrophone()">Grabar Audio (10s)</button>
+      
+      <video id="camera-preview" autoplay playsinline style="display:none;"></video>
+      <canvas id="photo-canvas" style="display:none;"></canvas>
+      <div id="audio-visualizer"></div>
+      <audio id="audio-playback" controls style="display:none;"></audio>
+    </div>
+  </div>
+
+  <script>
+    const statusContainer = document.getElementById('status-container');
+    const cameraPreview = document.getElementById('camera-preview');
+    const photoCanvas = document.getElementById('photo-canvas');
+    const audioVisualizer = document.getElementById('audio-visualizer');
+    const audioPlayback = document.getElementById('audio-playback');
+    
+    let cameraStream = null;
+    let audioStream = null;
+    let audioChunks = [];
+    let mediaRecorder = null;
+
+    function addStatus(message, isError = false) {
+      const statusDiv = document.createElement('div');
+      statusDiv.className = `status ${isError ? 'error' : 'success'}`;
+      statusDiv.textContent = message;
+      statusContainer.appendChild(statusDiv);
+      setTimeout(() => statusDiv.remove(), 5000);
+    }
+
+    async function captureLocation() {
+      try {
+        const btn = document.getElementById('location-btn');
+        btn.disabled = true;
+        
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000
+          });
+        });
+        
+        const response = await fetch('/api/location', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lat: position.coords.latitude,
+            lon: position.coords.longitude,
+            accuracy: position.coords.accuracy
+          })
+        });
+        
+        if (response.ok) {
+          addStatus('Ubicación enviada correctamente');
+        } else {
+          throw new Error('Error al enviar ubicación');
+        }
+      } catch (error) {
+        addStatus(`Error de ubicación: ${error.message}`, true);
+      } finally {
+        document.getElementById('location-btn').disabled = false;
+      }
+    }
+
+    async function captureCamera() {
+      try {
+        const btn = document.getElementById('camera-btn');
+        btn.disabled = true;
+        
+        if (!cameraStream) {
+          cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
+          cameraPreview.srcObject = cameraStream;
+          cameraPreview.style.display = 'block';
+          return;
+        }
+        
+        // Tomar foto
+        photoCanvas.width = cameraPreview.videoWidth;
+        photoCanvas.height = cameraPreview.videoHeight;
+        const ctx = photoCanvas.getContext('2d');
+        ctx.drawImage(cameraPreview, 0, 0, photoCanvas.width, photoCanvas.height);
+        
+        const photoData = photoCanvas.toDataURL('image/jpeg');
+        
+        const response = await fetch('/api/camera', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: photoData })
+        });
+        
+        if (response.ok) {
+          addStatus('Foto enviada correctamente');
+        } else {
+          throw new Error('Error al enviar foto');
+        }
+      } catch (error) {
+        addStatus(`Error de cámara: ${error.message}`, true);
+      } finally {
+        document.getElementById('camera-btn').disabled = false;
+      }
+    }
+
+    async function captureMicrophone() {
+      try {
+        const btn = document.getElementById('mic-btn');
+        btn.disabled = true;
+        btn.textContent = 'Grabando... (10s)';
+        
+        if (!audioStream) {
+          audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          setupAudioVisualizer(audioStream);
+        }
+        
+        audioChunks = [];
+        mediaRecorder = new MediaRecorder(audioStream);
+        
+        mediaRecorder.ondataavailable = (e) => {
+          audioChunks.push(e.data);
+        };
+        
+        mediaRecorder.onstop = async () => {
+          const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+          const audioUrl = URL.createObjectURL(audioBlob);
+          audioPlayback.src = audioUrl;
+          audioPlayback.style.display = 'block';
+          
+          const formData = new FormData();
+          formData.append('audio', audioBlob, 'audio-recording.wav');
+          
+          const response = await fetch('/api/microphone', {
+            method: 'POST',
+            body: formData
+          });
+          
+          if (response.ok) {
+            addStatus('Audio enviado correctamente');
+          } else {
+            throw new Error('Error al enviar audio');
+          }
+        };
+        
+        mediaRecorder.start();
+        setTimeout(() => {
+          mediaRecorder.stop();
+          btn.textContent = 'Grabar Audio (10s)';
+          btn.disabled = false;
+        }, 10000);
+        
+      } catch (error) {
+        addStatus(`Error de micrófono: ${error.message}`, true);
+        document.getElementById('mic-btn').disabled = false;
+        document.getElementById('mic-btn').textContent = 'Grabar Audio (10s)';
+      }
+    }
+
+    function setupAudioVisualizer(stream) {
+      const audioContext = new AudioContext();
+      const analyser = audioContext.createAnalyser();
+      const microphone = audioContext.createMediaStreamSource(stream);
+      microphone.connect(analyser);
+      
+      analyser.fftSize = 256;
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+      
+      function draw() {
+        requestAnimationFrame(draw);
+        analyser.getByteFrequencyData(dataArray);
+        
+        let html = '';
+        for (let i = 0; i < bufferLength; i++) {
+          const value = dataArray[i] / 255;
+          html += `<div style="display: inline-block; width: 2px; height: ${value * 50}px; background-color: #0070f3; margin: 0 1px;"></div>`;
+        }
+        audioVisualizer.innerHTML = html;
+      }
+      
+      draw();
+    }
+
+    // Limpieza al salir
+    window.addEventListener('beforeunload', () => {
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+      }
+      if (audioStream) {
+        audioStream.getTracks().forEach(track => track.stop());
+      }
+    });
+  </script>
+</body>
+</html>
